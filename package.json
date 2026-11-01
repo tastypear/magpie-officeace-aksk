@@ -1,0 +1,13 @@
+{
+  "name": "magpie-officeace-aksk",
+  "version": "0.1.0",
+  "description": "Magpie provider plugin for OfficeAce (Huawei Cloud AgentArts) signed in with a permanent AK/SK — no browser, no temporary credentials",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "files": ["index.mjs", "README.md", "LICENSE", "NOTICE.md"],
+  "keywords": ["magpie", "magpie-plugin", "opencode", "opencode-plugin", "officeace", "huaweicloud", "agentarts", "deveco"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/tastypear/magpie-officeace-aksk.git" },
+  "magpie": { "maxConcurrency": 4 }
+}
