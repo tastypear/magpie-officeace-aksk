@@ -687,7 +687,9 @@ function makePlugin() {
         {
           type: "api",
           label: "永久 AK/SK（华为云 IAM）",
-          placeholder: "Access Key (AK)",
+          // keyless: magpie 不再单独弹一个 API key 输入框（否则会和下面的
+          // ak/sk prompts 重复问一遍），全部由 prompts 收齐后交给 authorize。
+          keyless: true,
           prompts: [
             {
               type: "text",
