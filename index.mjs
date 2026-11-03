@@ -300,65 +300,115 @@ function gainedBetween(before, after) {
 
 const TIER_NAMES = { trial: "试用版", starter: "入门版", standard: "标准版", advanced: "高级版", premium: "尊享版", ultimate: "旗舰版" }
 
-const compact = (n) => (Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/0+$/, "").replace(/\.$/, ""))
-
-// usageOf turns a subscription answer into magpie's usage card: the credits
-// of the plan's skus and of the bonuses still alive, total minus used, the
-// expired entries not counted — the arithmetic credgate's calc_credits and
-// OfficeAce's own picker agree on. An unlimited quota (-1) says no share,
-// and is left out of the window.
+// usageOf turns a subscription answer into magpie's usage card. Two kinds of
+// bucket — the plan's `skus[].quotas[]` (officeace_points) and the bonuses in
+// `bonus_skus[]` — and the card shows each on its own, the way magpie's own
+// codearts plugin does: one row per bucket, its remaining figure in the row's
+// name, its own end time as resetsAt. Routing stays on ONE window over the
+// whole balance: a bucket that ran dry (the day's check-in, say, spent before
+// its evening end) must not tell magpie the account is out while the plan
+// still has credits, so the detail rows are aside and only the total gates.
+// An expired bucket is folded to text alone (aside, no amount/limit): with a
+// count it would read as "all left" of a total that no longer exists. A
+// `.trial` sku carries no expiry — shown as it is, never a date invented.
+// An unlimited quota (-1) says no share, and is left out entirely.
 function usageOf(sub, now = Date.now()) {
   const skus = Array.isArray(sub?.skus) ? sub.skus : []
   const bonus = Array.isArray(sub?.bonus_skus) ? sub.bonus_skus : []
+  const round = (n) => Math.round(n * 100) / 100
+  const num = (v) => (Number.isFinite(v) ? v : 0)
+  const endMs = (s, never) => {
+    if (never) return 0
+    if (typeof s === "string" && s) {
+      const t = Date.parse(s)
+      if (Number.isFinite(t)) return t
+    }
+    return 0
+  }
   let total = 0, used = 0
   const dying = []
+  const details = []
+  let plan = ""
+
   for (const s of skus) {
+    const isTrial = String(s?.sku_code ?? "").endsWith(".trial")
     for (const q of Array.isArray(s?.quotas) ? s.quotas : []) {
       if (q?.sku_attr_code !== "officeace_points") continue
-      const exp = Date.parse(q?.expired_time || "") || 0
-      if (exp && exp <= now) continue
-      const grant = Number(q.sku_value) || 0
-      if (grant < 0) continue
-      total += grant
-      used += Number(q.current_value) || 0
-      dying.push({ left: grant - (Number(q.current_value) || 0), exp })
+      const grant = Number(q.sku_value)
+      if (!Number.isFinite(grant) || grant <= 0) continue
+      const usedB = num(Number(q.current_value))
+      if (!plan && typeof s.sku_name === "string") plan = s.sku_name
+      const exp = endMs(q?.expired_time, isTrial)
+      const expired = exp !== 0 && exp <= now
+      const remaining = Math.max(0, grant - usedB)
+      if (!expired) {
+        total += grant
+        used += usedB
+        dying.push({ left: remaining, exp })
+      }
+      details.push({ name: `${s.sku_name ?? "套餐"} · 剩 ${round(remaining)}`, remaining, grant, usedB, expired,
+        resetsAt: exp ? new Date(exp).toISOString() : "" })
     }
   }
   for (const b of bonus) {
-    const exp = Date.parse(b?.expired_time || "") || 0
-    if (exp && exp <= now) continue
-    const grant = Number(b.points) || 0
-    if (grant < 0) continue
-    total += grant
-    used += Number(b.current_value) || 0
-    dying.push({ left: grant - (Number(b.current_value) || 0), exp })
+    const grant = Number(b.points)
+    if (!Number.isFinite(grant) || grant <= 0) continue
+    const usedB = num(Number(b.current_value))
+    const exp = endMs(b?.expired_time, false)
+    const expired = exp !== 0 && exp <= now
+    const remaining = Math.max(0, grant - usedB)
+    if (!expired) {
+      total += grant
+      used += usedB
+      dying.push({ left: remaining, exp })
+    }
+    details.push({ name: `${b.activity_name ?? "活动奖励"} · 剩 ${round(remaining)}`, remaining, grant, usedB, expired,
+      resetsAt: exp ? new Date(exp).toISOString() : "" })
   }
+
   const windows = []
+  // 路由只看这个聚合窗口：总余额归零才停用账号——按桶各自门控会让一个先用完的桶
+  // （如每日签到当天扣完）把还有套餐积分的账号误判成耗尽。
   if (total > 0) {
-    windows.push({
-      name: "Credits",
+    const w = {
+      name: "积分总额",
       used: (100 * used) / total,
-      display: `${compact(used)} / ${compact(total)}`,
+      display: `剩 ${round(total - used)} / ${round(total)}`,
       amount: used,
       limit: total,
       unit: "credits",
-    })
+    }
     // the soonest moment credits left are lost, and how many — magpie's
-    // smart routing spends the account whose credits expire first. A quota
-    // that names no end ends when the plan does, so it isn't counted.
+    // smart routing spends the account whose credits expire first.
     let at = 0, amount = 0
     for (const d of dying) {
       if (!(d.left > 0) || d.exp <= now) continue
       if (!at || d.exp < at) { at = d.exp; amount = d.left }
       else if (d.exp === at) amount += d.left
     }
-    if (at) Object.assign(windows[0], { runsOutAt: new Date(at).toISOString(), runsOut: amount })
+    if (at) Object.assign(w, { runsOutAt: new Date(at).toISOString(), runsOut: amount })
+    windows.push(w)
+  }
+  // 每个桶一行：aside 纯展示不门控。过期的桶只留文案（不带 amount/limit，
+  // 否则它的总量读起来像"全剩"）。
+  for (const d of details) {
+    const w = { name: d.name, unit: "credits", aside: true }
+    if (d.resetsAt) w.resetsAt = d.resetsAt
+    if (d.expired) {
+      w.display = `剩 0 / ${round(d.grant)}（已过期）`
+    } else {
+      w.used = Math.min(100, Math.round((d.usedB / d.grant) * 100))
+      w.amount = d.usedB
+      w.limit = d.grant
+      w.span = 0
+    }
+    windows.push(w)
   }
   const main = skus[0] || null
   const tier = String(main?.sku_code || "").split(".").pop() || ""
   const until = Date.parse(main?.expired_time || "") || 0
   return {
-    plan: main?.sku_name || TIER_NAMES[tier] || (total > 0 ? "OfficeAce" : ""),
+    plan: plan || main?.sku_name || TIER_NAMES[tier] || (total > 0 ? "OfficeAce" : ""),
     windows,
     ...(until ? { until: new Date(until).toISOString() } : {}),
   }

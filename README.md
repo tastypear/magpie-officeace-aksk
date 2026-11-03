@@ -49,7 +49,9 @@ credentials.csv，取 Access Key Id 与 Secret Access Key）。
 - **对话转发**：OpenAI 兼容 `/v2/chat/completions`，Basic 鉴权；强制流式（网关对流式响应最好），
   非流式请求自动把 SSE 聚合回单个 `chat.completion` JSON；glm-5.3 族去掉 thinking 参数，
   `max_tokens` 给推理模型留思考余量
-- **额度**：`/v1/subscription` 汇总套餐 + 奖励剩余，过期桶不计，带 `runsOutAt`（最先到期的那批）
+- **额度**：`/v1/subscription` 每个桶一行明细（套餐、新人奖励、每日签到各自的剩余与到期时间，
+  过期的折叠成文案），路由只看总余额的聚合窗口——单个先用完的桶（如每日签到当天扣完）
+  不会把还有套餐积分的账号误判成耗尽
 - **签到**：`/v1/subscription/bonus/claim` 一次幂等 POST 领取每日签到与新人奖励，按 before/after 差额上报
 - **模型**：登录后从 `/v2/models` 实时拉取，取不到时回退静态清单（deepseek/glm/kimi/qwen/openpangu）
 - 错误：积分耗尽改写成 `insufficient_quota` 并带 `X-Magpie-Sign-In: kept`（Basic key 不过期，不标记账号）

@@ -144,7 +144,7 @@ test("explained: 积分耗尽改写为 insufficient_quota + kept；普通 400 �
 
 // ---- usageOf ----
 
-test("usageOf: 套餐 + 奖励汇总，过期桶不计，带 runsOutAt", () => {
+test("usageOf: 每桶一行明细 + 聚合门控窗口；过期桶折叠为文案", () => {
   const now = Date.parse("2026-11-01T00:00:00Z")
   const sub = {
     skus: [{
@@ -162,14 +162,65 @@ test("usageOf: 套餐 + 奖励汇总，过期桶不计，带 runsOutAt", () => {
   }
   const u = _internal.usageOf(sub, now)
   assert.equal(u.plan, "标准版")
-  assert.equal(u.windows.length, 1)
-  const w = u.windows[0]
-  assert.equal(w.limit, 10200, "10000 套餐 + 200 奖励（过期的 500 不计）")
-  assert.equal(w.amount, 2050, "2000 + 50")
-  assert.equal(w.used, (100 * 2050) / 10200)
-  assert.equal(w.runsOut, 150, "最先到期的是 11-02 的奖励，剩 150")
-  assert.match(w.runsOutAt, /^2026-11-02T00:00:00/)
+
+  // windows[0] 是唯一的门控窗口：聚合总量（10000 套餐 + 200 奖励，过期的 500 不计）
+  const gate = u.windows[0]
+  assert.equal(gate.name, "积分总额")
+  assert.equal(gate.limit, 10200)
+  assert.equal(gate.amount, 2050, "2000 + 50")
+  assert.equal(gate.used, (100 * 2050) / 10200)
+  assert.equal(gate.runsOut, 150, "最先到期的是 11-02 的奖励，剩 150")
+  assert.match(gate.runsOutAt, /^2026-11-02T00:00:00/)
+  assert.equal(gate.aside, undefined, "门控窗口不能 aside")
+
+  // 其余全部 aside 明细，不参与门控
+  const details = u.windows.slice(1)
+  assert.equal(details.length, 3)
+  assert.ok(details.every((d) => d.aside === true), "明细行必须 aside，单个用完的桶不能把账号判死")
+
+  const pkg = details[0]
+  assert.equal(pkg.name, "标准版 · 剩 8000")
+  assert.equal(pkg.amount, 2000)
+  assert.equal(pkg.limit, 10000)
+  assert.equal(pkg.used, 20)
+  assert.equal(pkg.resetsAt, "2026-12-01T00:00:00.000Z")
+
+  const gone = details[1]
+  assert.equal(gone.name, "标准版 · 剩 500")
+  assert.equal(gone.display, "剩 0 / 500（已过期）")
+  assert.equal(gone.amount, undefined, "过期桶不带 amount/limit，否则读起来像全剩")
+  assert.equal(gone.limit, undefined)
+  assert.equal(gone.used, undefined)
+  assert.equal(gone.resetsAt, "2026-10-01T00:00:00.000Z")
+
+  const bonus = details[2]
+  assert.equal(bonus.name, "活动奖励 · 剩 150")
+  assert.equal(bonus.amount, 50)
+  assert.equal(bonus.limit, 200)
+  assert.equal(bonus.used, 25)
+  assert.equal(bonus.resetsAt, "2026-11-02T00:00:00.000Z")
+
   assert.match(u.until, /^2026-12-01/) // 套餐到期
+})
+
+test("usageOf: trial 套餐无到期时间，不编造 resetsAt", () => {
+  const now = Date.parse("2026-11-01T00:00:00Z")
+  const sub = {
+    skus: [{
+      sku_name: "体验版", sku_code: "officeace.trial",
+      quotas: [{ sku_attr_code: "officeace_points", sku_value: 500, current_value: 100 }],
+    }],
+    bonus_skus: [],
+  }
+  const u = _internal.usageOf(sub, now)
+  assert.equal(u.windows.length, 2, "聚合 + 一行明细")
+  assert.equal(u.windows[0].limit, 500)
+  assert.equal(u.windows[0].runsOutAt, undefined, "无到期桶没有 runsOut")
+  const pkg = u.windows[1]
+  assert.equal(pkg.name, "体验版 · 剩 400")
+  assert.equal(pkg.resetsAt, undefined, "trial 不编造到期时间")
+  assert.equal(pkg.amount, 100)
+  assert.equal(u.until, undefined, "trial 套餐没有 until")
 })
 
 // ---- mock 上游 ----
@@ -312,8 +363,11 @@ test("usage: 订阅查询汇总积分；401/错误带 signIn:kept", async () => 
   })
   const usage = await plugin.auth.usage(async () => auth)
   assert.equal(usage.plan, "标准版")
+  assert.equal(usage.windows[0].name, "积分总额")
   assert.equal(usage.windows[0].limit, 5000)
   assert.equal(usage.windows[0].amount, 1000)
+  assert.equal(usage.windows.length, 2, "聚合门控 + 一行明细")
+  assert.equal(usage.windows[1].aside, true)
   assert.equal(usage.signIn, "kept")
 
   setHandler((req, res) => { res.writeHead(401, { "Content-Type": "application/json" }); res.end('{"error_code":"APIG.0301"}') })
