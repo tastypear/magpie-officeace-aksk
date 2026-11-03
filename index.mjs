@@ -490,6 +490,11 @@ const ALWAYS_THINKING = new Set(["glm-5.3-flash"])
 // an agent asking for 1 token means it.
 const TINY_MAX_TOKENS = 16
 const THINKING_ALLOWANCE = 1024
+// The gateway also caps the output budget per model (measured: glm-5.3-flash
+// answers 400 ModelArts.81001「max_tokens参数非法：限制数值范围[1,131072]」;
+// agents send 1048576 as "unbounded"). Clamped here, and a cap the clamp
+// missed is retried with the bound the refusal itself names (gatewayFetch).
+const OA_MAX_OUTPUT_TOKENS = 131072
 
 // fitBody mends a chat body the way officeace2api sends them: the thinking
 // params glm-5.3 refuses are gone, the max_tokens budget is bumped, and the
@@ -516,7 +521,7 @@ function fitBody(body) {
     if (b.reasoning_effort === "none") delete b.reasoning_effort
   }
   const given = Number(b.max_tokens)
-  if (Number.isFinite(given) && given >= TINY_MAX_TOKENS) b.max_tokens = given + THINKING_ALLOWANCE
+  if (Number.isFinite(given) && given >= TINY_MAX_TOKENS) b.max_tokens = Math.min(given + THINKING_ALLOWANCE, OA_MAX_OUTPUT_TOKENS)
   if (typeof b.temperature === "number") b.temperature = Math.min(2, Math.max(0, b.temperature))
   if (typeof b.top_p === "number") b.top_p = Math.min(1, Math.max(0, b.top_p))
   if (b.stream_options === undefined) b.stream_options = { include_usage: true }
@@ -647,6 +652,22 @@ function stripThinkingParams(bodyText) {
   return stripped ? JSON.stringify(b) : null
 }
 
+// 按正文里给出的上限改写 max_tokens；解析不了或已在限内返回 null（不再重发）
+function withMaxTokens(bodyText, cap) {
+  if (typeof bodyText !== "string" || !bodyText || !Number.isFinite(cap) || cap <= 0) return null
+  let b
+  try {
+    b = JSON.parse(bodyText)
+  } catch {
+    return null
+  }
+  if (!b || typeof b !== "object" || Array.isArray(b)) return null
+  const given = Number(b.max_tokens)
+  if (!Number.isFinite(given) || given <= cap) return null
+  b.max_tokens = cap
+  return JSON.stringify(b)
+}
+
 function gatewayFetch(auth) {
   return async (input, init) => {
     const req = input instanceof Request ? input : null
@@ -664,15 +685,22 @@ function gatewayFetch(auth) {
     let res = await send(fit.body)
     if (res.status === 400) {
       const text = await res.text()
-      // 始终思考的模型拒绝关闭思考（ModelArts.81001，实测 glm-5.3-flash）：
-      // 去掉思考参数按模型默认重发一次，兜底 ALWAYS_THINKING 清单外的同款模型
+      let retry = null
       if (/ModelArts\.81001/.test(text)) {
-        const stripped = stripThinkingParams(fit.body)
-        if (stripped !== null) res = await send(stripped)
-        else return explained(new Response(text, { status: res.status, statusText: res.statusText, headers: res.headers }))
-      } else {
-        return explained(new Response(text, { status: res.status, statusText: res.statusText, headers: res.headers }))
+        if (/max_tokens/.test(text)) {
+          // 输出预算超限：正文带真实上限「限制数值范围[1,N]」（各模型不同），
+          // 按 N 重发一次——钳制漏掉的更小上限在这里自适应
+          const capped = withMaxTokens(fit.body, Number(/\[1,(\d+)\]/.exec(text)?.[1] ?? NaN))
+          if (capped !== null) retry = capped
+        } else {
+          // 始终思考的模型拒绝关闭思考：去掉思考参数按模型默认重发一次，
+          // 兜底 ALWAYS_THINKING 清单外的同款模型
+          const stripped = stripThinkingParams(fit.body)
+          if (stripped !== null) retry = stripped
+        }
       }
+      if (retry !== null) res = await send(retry)
+      else return explained(new Response(text, { status: res.status, statusText: res.statusText, headers: res.headers }))
     }
     if (res.status >= 400) return explained(res)
     return fit.wanted ? res : aggregated(res, fit.model)
@@ -1738,7 +1766,7 @@ export const _internal = {
   vendorError, redacted, baselineOf, bonusList, gainedBetween,
   usageOf, staticModels, modelOf, liveModels,
   NO_THINKING, STRIP_WHEN_NO_THINKING, ALWAYS_THINKING, TINY_MAX_TOKENS, THINKING_ALLOWANCE,
-  fitBody, stripThinkingParams, aggregated, explained, gatewayFetch, EXHAUSTED, EXHAUSTED_HINT,
+  fitBody, stripThinkingParams, withMaxTokens, aggregated, explained, gatewayFetch, EXHAUSTED, EXHAUSTED_HINT,
 
   // codearts
   CA_PROVIDER, CA_SNAP_HOST, CA_CHAT_API_BASE, CA_STATISTICS_URL, CA_MODELS_URL,

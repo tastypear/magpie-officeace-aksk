@@ -488,3 +488,44 @@ test("gatewayFetch: ModelArts.81001 去思考参数重发一次（兜底清单�
   assert.equal(bodies[1].reasoning_effort, undefined)
   server.close()
 })
+
+test("fitBody: max_tokens 钳到网关上限 131072（Qoder 发 1048576 会 400）", () => {
+  // 实测：max_tokens 1048576(+1024) 超过 glm-5.3-flash 的上限 [1,131072] →
+  // 400 ModelArts.81001「max_tokens参数非法」
+  const fit = _internal.fitBody(JSON.stringify({ model: "glm-5.3-flash", messages: [], max_tokens: 1048576, stream: true }))
+  assert.equal(JSON.parse(fit.body).max_tokens, 131072, "超限的预算钳到上限（含思考余量后仍不超）")
+
+  const fit2 = _internal.fitBody(JSON.stringify({ model: "deepseek-v4-pro", messages: [], max_tokens: 100000, stream: true }))
+  assert.equal(JSON.parse(fit2.body).max_tokens, 101024, "限内的预算照常 +1024")
+
+  const fit3 = _internal.fitBody(JSON.stringify({ model: "m", messages: [], max_tokens: 8, stream: true }))
+  assert.equal(JSON.parse(fit3.body).max_tokens, 8, "小于 16 的显式预算不动")
+})
+
+test("gatewayFetch: max_tokens 超限按正文里的真实上限重发一次", async () => {
+  const { server, mod, setHandler } = await setup()
+  const plugin = await mod.OfficeAceAkskPlugin()
+  const auth = account(server.address().port)
+  const loader = await plugin.auth.loader(async () => auth)
+  const url = `http://127.0.0.1:${server.address().port}/v2/chat/completions`
+  const bodies = []
+  setHandler((req, res, raw) => {
+    bodies.push(JSON.parse(raw))
+    if (bodies.length === 1) {
+      res.writeHead(400, { "Content-Type": "application/json" })
+      res.end('{"error":{"code":"ModelArts.81001","message":"max_tokens参数非法：限制数值范围[1,65536]"}}')
+      return
+    }
+    res.writeHead(200, { "Content-Type": "text/event-stream" })
+    res.end('data: {"id":"x","model":"m","choices":[{"delta":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}\ndata: [DONE]\n')
+  })
+  const res = await loader.fetch(url, {
+    method: "POST",
+    body: JSON.stringify({ model: "small-cap-model", messages: [], max_tokens: 131072, stream: true }),
+  })
+  assert.equal(res.status, 200, "按正文上限重发后成功")
+  assert.equal(bodies.length, 2)
+  assert.equal(bodies[0].max_tokens, 131072)
+  assert.equal(bodies[1].max_tokens, 65536, "重发时用正文给出的真实上限")
+  server.close()
+})
