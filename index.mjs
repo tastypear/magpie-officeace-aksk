@@ -692,8 +692,11 @@ function gatewayFetch(auth) {
     const fit = fitBody(body)
     console.error(`[OA-TIME] fitBody 完成 model=${fit.model} stream=${JSON.parse(fit.body).stream} ${ts()}`)
     const send = (bodyText) => {
-      console.error(`[OA-TIME] fetch→上游发起 ${ts()}`)
-      return fetch(req ? req.url : input, { ...init, method: init?.method ?? req?.method, headers, body: bodyText }).then(res => {
+      // 绕过宿主对 globalThis.fetch 的包装，用 Bun 原生 fetch 直发
+      // 诊断：经网关大请求体挂起，直发正常——怀疑宿主 fetch 包装层有问题
+      const rawFetch = (typeof Bun !== "undefined" && Bun.fetch) ? Bun.fetch : fetch
+      console.error(`[OA-TIME] fetch→上游发起 ${ts()} | using ${rawFetch === fetch ? "global" : "Bun.native"} fetch`)
+      return rawFetch(req ? req.url : input, { ...init, method: init?.method ?? req?.method, headers, body: bodyText }).then(res => {
         console.error(`[OA-TIME] 上游响应头 status=${res.status} ct=${res.headers.get("content-type")?.slice(0, 30)} ${ts()}`)
         return res
       })
