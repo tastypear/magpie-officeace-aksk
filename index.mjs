@@ -476,6 +476,13 @@ async function liveModels(auth) {
 const NO_THINKING = new Set(["glm-5.3", "glm-5.3-test", "glm-5.3-zx", "glm-5-test"])
 const STRIP_WHEN_NO_THINKING = ["thinking", "enable_thinking", "reasoning_effort", "stream_options"]
 
+// 这些模型相反：始终思考，不支持关闭（实测 glm-5.3-flash 回 ModelArts.81001
+// 「该模型始终思考，不支持关闭思考；请使用 low、high 或 max」）。客户端要求
+// 不思考时（enable_thinking:false / thinking:disabled / reasoning_effort:none）
+// 只能去掉这些参数让模型按默认思考——magpie 的思考等级配置只改
+// reasoning_effort，改不到 enable_thinking，所以在这里修。
+const ALWAYS_THINKING = new Set(["glm-5.3-flash"])
+
 // The gateway counts max_tokens as the budget reasoning AND answer share
 // (officeace2api's finding): a reasoning model spends it all thinking and
 // answers with nothing. So the budget an agent gave is bumped by an
@@ -501,6 +508,13 @@ function fitBody(body) {
   const wanted = b.stream === true
   const model = String(b.model || "")
   if (NO_THINKING.has(model)) for (const k of STRIP_WHEN_NO_THINKING) delete b[k]
+  if (ALWAYS_THINKING.has(model.toLowerCase())) {
+    // 始终思考的模型：关闭思考的参数一律去掉（reasoning_effort 的 none 同样无效），
+    // 保留其余取值（magpie 映射好的 low 等）
+    if (b.enable_thinking === false) delete b.enable_thinking
+    if (b.thinking && typeof b.thinking === "object" && b.thinking.type === "disabled") delete b.thinking
+    if (b.reasoning_effort === "none") delete b.reasoning_effort
+  }
   const given = Number(b.max_tokens)
   if (Number.isFinite(given) && given >= TINY_MAX_TOKENS) b.max_tokens = given + THINKING_ALLOWANCE
   if (typeof b.temperature === "number") b.temperature = Math.min(2, Math.max(0, b.temperature))
@@ -612,6 +626,27 @@ async function explained(res) {
 // gatewayFetch is the fetch every chat of an account goes through: the
 // account's Basic key on it, the body mended, a refusal explained, a stream
 // folded back together for an agent that asked for one piece.
+// 去掉请求里的思考参数（thinking / enable_thinking / reasoning_effort）；
+// 没有可去的返回 null（不再重发）
+function stripThinkingParams(bodyText) {
+  if (typeof bodyText !== "string" || !bodyText) return null
+  let b
+  try {
+    b = JSON.parse(bodyText)
+  } catch {
+    return null
+  }
+  if (!b || typeof b !== "object" || Array.isArray(b)) return null
+  let stripped = false
+  for (const k of ["thinking", "enable_thinking", "reasoning_effort"]) {
+    if (k in b) {
+      delete b[k]
+      stripped = true
+    }
+  }
+  return stripped ? JSON.stringify(b) : null
+}
+
 function gatewayFetch(auth) {
   return async (input, init) => {
     const req = input instanceof Request ? input : null
@@ -624,7 +659,21 @@ function gatewayFetch(auth) {
     let body = init?.body
     if (body === undefined && req) body = await req.clone().text()
     const fit = fitBody(body)
-    const res = await fetch(req ? req.url : input, { ...init, method: init?.method ?? req?.method, headers, body: fit.body })
+    const send = (bodyText) => fetch(req ? req.url : input, { ...init, method: init?.method ?? req?.method, headers, body: bodyText })
+
+    let res = await send(fit.body)
+    if (res.status === 400) {
+      const text = await res.text()
+      // 始终思考的模型拒绝关闭思考（ModelArts.81001，实测 glm-5.3-flash）：
+      // 去掉思考参数按模型默认重发一次，兜底 ALWAYS_THINKING 清单外的同款模型
+      if (/ModelArts\.81001/.test(text)) {
+        const stripped = stripThinkingParams(fit.body)
+        if (stripped !== null) res = await send(stripped)
+        else return explained(new Response(text, { status: res.status, statusText: res.statusText, headers: res.headers }))
+      } else {
+        return explained(new Response(text, { status: res.status, statusText: res.statusText, headers: res.headers }))
+      }
+    }
     if (res.status >= 400) return explained(res)
     return fit.wanted ? res : aggregated(res, fit.model)
   }
@@ -1688,8 +1737,8 @@ export const _internal = {
   fetchPermission, controlCall, subscriptionOf, claimBonus,
   vendorError, redacted, baselineOf, bonusList, gainedBetween,
   usageOf, staticModels, modelOf, liveModels,
-  NO_THINKING, STRIP_WHEN_NO_THINKING, TINY_MAX_TOKENS, THINKING_ALLOWANCE,
-  fitBody, aggregated, explained, gatewayFetch, EXHAUSTED, EXHAUSTED_HINT,
+  NO_THINKING, STRIP_WHEN_NO_THINKING, ALWAYS_THINKING, TINY_MAX_TOKENS, THINKING_ALLOWANCE,
+  fitBody, stripThinkingParams, aggregated, explained, gatewayFetch, EXHAUSTED, EXHAUSTED_HINT,
 
   // codearts
   CA_PROVIDER, CA_SNAP_HOST, CA_CHAT_API_BASE, CA_STATISTICS_URL, CA_MODELS_URL,

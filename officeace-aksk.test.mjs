@@ -438,3 +438,53 @@ test("provider.models: 拉取上游；无 Basic 回退静态；config 声明供�
   assert.ok(cfg.provider["officeace-aksk"].models["kimi-k2.6"])
   server.close()
 })
+
+test("fitBody: 始终思考的模型（glm-5.3-flash）剥离关思考参数", () => {
+  // 客户端要求不思考：enable_thinking:false + reasoning_effort:none 全部去掉
+  const fit = _internal.fitBody(JSON.stringify({ model: "glm-5.3-flash", messages: [], enable_thinking: false, reasoning_effort: "none", stream: true }))
+  const b = JSON.parse(fit.body)
+  assert.equal(b.enable_thinking, undefined, "enable_thinking:false 触发 ModelArts.81001，必须去掉")
+  assert.equal(b.reasoning_effort, undefined, "none 对始终思考的模型无效")
+  assert.equal(b.stream, true)
+
+  // magpie 映射后的 low 保留（用户配置的思考等级不丢）
+  const fit2 = _internal.fitBody(JSON.stringify({ model: "glm-5.3-flash", messages: [], enable_thinking: false, reasoning_effort: "low", stream: true }))
+  const b2 = JSON.parse(fit2.body)
+  assert.equal(b2.enable_thinking, undefined)
+  assert.equal(b2.reasoning_effort, "low")
+
+  // 其他模型不受影响
+  const fit3 = _internal.fitBody(JSON.stringify({ model: "deepseek-v4-pro", messages: [], enable_thinking: false, reasoning_effort: "none", stream: true }))
+  const b3 = JSON.parse(fit3.body)
+  assert.equal(b3.enable_thinking, false)
+  assert.equal(b3.reasoning_effort, "none")
+})
+
+test("gatewayFetch: ModelArts.81001 去思考参数重发一次（兜底清单外模型）", async () => {
+  const { server, mod, setHandler } = await setup()
+  const plugin = await mod.OfficeAceAkskPlugin()
+  const auth = account(server.address().port)
+  const loader = await plugin.auth.loader(async () => auth)
+  const url = `http://127.0.0.1:${server.address().port}/v2/chat/completions`
+  const bodies = []
+  setHandler((req, res, raw) => {
+    bodies.push(JSON.parse(raw))
+    if (bodies.length === 1) {
+      res.writeHead(400, { "Content-Type": "application/json" })
+      res.end('{"error":{"code":"ModelArts.81001","message":"该模型始终思考，不支持关闭思考；请使用 low、high 或 max。"}}')
+      return
+    }
+    res.writeHead(200, { "Content-Type": "text/event-stream" })
+    res.end('data: {"id":"x","model":"m","choices":[{"delta":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\ndata: [DONE]\n')
+  })
+  const res = await loader.fetch(url, {
+    method: "POST",
+    body: JSON.stringify({ model: "unknown-always-thinking", messages: [], enable_thinking: false, reasoning_effort: "low", stream: true }),
+  })
+  assert.equal(res.status, 200, "重发后成功")
+  assert.equal(bodies.length, 2)
+  assert.equal(bodies[0].enable_thinking, false)
+  assert.equal(bodies[1].enable_thinking, undefined, "重发时去掉思考参数")
+  assert.equal(bodies[1].reasoning_effort, undefined)
+  server.close()
+})

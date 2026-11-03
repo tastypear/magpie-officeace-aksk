@@ -44,7 +44,10 @@ credentials.csv，取 Access Key Id 与 Secret Access Key）。
 
 - **对话**：OpenAI 兼容 `/v2/chat/completions`，Basic 鉴权；强制流式（网关对流式响应最好），
   非流式请求自动把 SSE 聚合回单个 `chat.completion` JSON；glm-5.3 族去掉 thinking 参数，
-  `max_tokens` 给推理模型留思考余量
+  `max_tokens` 给推理模型留思考余量；**始终思考的模型**（glm-5.3-flash 等，实测回
+  `ModelArts.81001`「该模型始终思考，不支持关闭思考」）自动剥离客户端的关思考参数
+  （`enable_thinking:false` / `reasoning_effort:none`），保留 magpie 映射的思考等级；
+  清单外的同款模型遇到 81001 也会去参数重发一次兜底
 - **额度**：`/v1/subscription` 每个桶一行明细（套餐、新人奖励、每日签到各自的剩余与到期时间，
   过期的折叠成文案），路由只看总余额的聚合窗口——单个先用完的桶（如每日签到当天扣完）
   不会把还有套餐积分的账号误判成耗尽
