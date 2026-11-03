@@ -1319,10 +1319,20 @@ function caGatewayFetch(auth) {
         code = caErrorCodeOf(text)
       }
 
-      if (res.status === 401 || res.status === 403) {
+      if (res.status === 401) {
         const out = new Headers(res.headers)
         out.set("X-Magpie-Sign-In", "expired")
         return new Response(text, { status: res.status, statusText: res.statusText, headers: out })
+      }
+      if (res.status === 403) {
+        // 永久 AK/SK 没有「登录失效」。403 的语义是模型级权益拒绝（实测 glm-5.3
+        // 回 TM.000010051「当前所选模型的使用权益已耗尽，可选择如下模型…」）：
+        // 按 magpie 的模型拒绝方言改写（modelRefused 认 403 + ModelUnserved 词、
+        // 正文不落 quotaWords），路由只冷却该模型、账号其他模型照常；不带
+        // X-Magpie-Sign-In，账号永不标记失效（magpie 文档：账号不能用某模型
+        // 时用 403/404 而非 401）。
+        const list = /可选择如下模型[:：]\s*(\[[^\]]*\])/.exec(text)?.[1] ?? ""
+        return caErrorResponse(403, code, `模型未开通：${fallbackModel || "该模型"} 不在此账号的可用模型清单${list ? `（可用：${list}）` : ""}`)
       }
       // thinking 是插件自己注入的：模型拒绝就按原请求重发一次
       if (res.status === 400 && chat?.injected && /thinking/i.test(text)) {

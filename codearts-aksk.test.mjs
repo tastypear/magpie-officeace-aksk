@@ -286,6 +286,22 @@ test("loader fetch: 会话上限重试、thinking 拒绝重发、401 标记、�
   assert.equal(r3.status, 401)
   assert.equal(r3.headers.get("X-Magpie-Sign-In"), "expired")
 
+  // 403（模型权益拒绝，glm-5.3 实测形状 TM.000010051）→ magpie 模型级拒绝方言：
+  // 不带 X-Magpie-Sign-In（账号永不失效），正文命中 ModelUnserved 且避开 quotaWords
+  // （quotaWords 会把账号级冷却），路由只冷却该模型
+  setHandler((req, res) => {
+    res.writeHead(403, { "Content-Type": "application/json" })
+    res.end('{"error_code":"TM.000010051","error_msg":"多模态功能或当前所选模型的使用权益已耗尽，可选择如下模型: [GLM-5.2, openpangu-2.0-pro]。 可免费升级到积分套餐获取更多权益。"}')
+  })
+  const r3b = await loader.fetch(url, { method: "POST", body: JSON.stringify({ model: "glm-5.3", messages: [] }) })
+  assert.equal(r3b.status, 403)
+  assert.equal(r3b.headers.get("X-Magpie-Sign-In"), null, "403 不能标记账号失效（永久 AK/SK 无登录失效）")
+  const b3b = await r3b.json()
+  assert.match(b3b.error.message, /模型未开通：glm-5.3/, "命中 ModelUnserved（模型…未开通）")
+  assert.match(b3b.error.message, /GLM-5.2/, "带上游给的可用模型清单")
+  assert.ok(!/套餐|余额|额度|用量|上限/.test(b3b.error.message), "改写正文不能落 quotaWords（否则账号级冷却）")
+  assert.equal(b3b.error.code, "TM.000010051")
+
   // 200 里嵌 429 错误 → 429
   setHandler((req, res) => {
     res.writeHead(200, { "Content-Type": "text/event-stream" })
