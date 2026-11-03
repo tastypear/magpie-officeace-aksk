@@ -679,6 +679,13 @@ function gatewayFetch(auth) {
     headers.set("User-Agent", UA)
     let body = init?.body
     if (body === undefined && req) body = await req.clone().text()
+    // TEMPORARY DEBUG: 捕获网关发来的大请求体（>50KB），用于对比诊断
+    if (typeof body === "string" && body.length > 50000 && process.env.OFFICEACE_CAPTURE_DIR) {
+      try {
+        const fs = await import("node:fs")
+        fs.writeFileSync(`${process.env.OFFICEACE_CAPTURE_DIR}/oa-recv-${Date.now()}.json`, body)
+      } catch {}
+    }
     const fit = fitBody(body)
     const send = (bodyText) => fetch(req ? req.url : input, { ...init, method: init?.method ?? req?.method, headers, body: bodyText })
 
