@@ -670,8 +670,6 @@ function withMaxTokens(bodyText, cap) {
 
 function gatewayFetch(auth) {
   return async (input, init) => {
-    const t0 = Date.now()
-    const ts = () => `${Date.now() - t0}ms`
     const req = input instanceof Request ? input : null
     const headers = new Headers(init?.headers ?? req?.headers)
     headers.delete("authorization")
@@ -681,29 +679,17 @@ function gatewayFetch(auth) {
     headers.set("User-Agent", UA)
     let body = init?.body
     if (body === undefined && req) body = await req.clone().text()
-    console.error(`[OA-TIME] body 提取完成 ${typeof body === "string" ? body.length : "?"} bytes ${ts()}`)
-    // TEMPORARY DEBUG: 捕获网关发来的大请求体（>50KB），用于对比诊断
-    if (typeof body === "string" && body.length > 50000) {
-      try {
-        const fs = await import("node:fs")
-        fs.writeFileSync(`C:/Users/tastypear/AppData/Local/Temp/oa-recv-${Date.now()}.json`, body)
-      } catch {}
-    }
     const fit = fitBody(body)
-    console.error(`[OA-TIME] fitBody 完成 model=${fit.model} stream=${JSON.parse(fit.body).stream} ${ts()}`)
     const send = (bodyText) => {
-      // 绕过宿主对 globalThis.fetch 的包装，用 Bun 原生 fetch 直发
-      // 诊断：经网关大请求体挂起，直发正常——怀疑宿主 fetch 包装层有问题
-      const rawFetch = (typeof Bun !== "undefined" && Bun.fetch) ? Bun.fetch : fetch
-      console.error(`[OA-TIME] fetch→上游发起 ${ts()} | using ${rawFetch === fetch ? "global" : "Bun.native"} fetch`)
-      return rawFetch(req ? req.url : input, { ...init, method: init?.method ?? req?.method, headers, body: bodyText }).then(res => {
-        console.error(`[OA-TIME] 上游响应头 status=${res.status} ct=${res.headers.get("content-type")?.slice(0, 30)} ${ts()}`)
-        return res
-      })
+      // 用 Bun 原生 fetch 而不是宿主的 globalThis.fetch：
+      // 宿主包装链（unsaid→asked→sent→proxyFor）在大请求体（>2MB）时
+      // 导致上游永远不返回响应头（实测 63 秒内无任何响应）。
+      // Bun.fetch 原生直发正常（实测 35-49 秒出首 token）。
+      const sendFetch = (typeof Bun !== "undefined" && Bun.fetch) ? Bun.fetch : globalThis.fetch
+      return sendFetch(req ? req.url : input, { ...init, method: init?.method ?? req?.method, headers, body: bodyText })
     }
 
     let res = await send(fit.body)
-    console.error(`[OA-TIME] send() 返回 ${ts()}`)
     if (res.status === 400) {
       const text = await res.text()
       let retry = null
@@ -723,11 +709,7 @@ function gatewayFetch(auth) {
       if (retry !== null) res = await send(retry)
       else return explained(new Response(text, { status: res.status, statusText: res.statusText, headers: res.headers }))
     }
-    if (res.status >= 400) {
-      console.error(`[OA-TIME] 错误路径 ≥400 status=${res.status} ${ts()}`)
-      return explained(res)
-    }
-    console.error(`[OA-TIME] 成功路径返回（${fit.wanted ? "流式透传" : "聚合折叠"}）${ts()}`)
+    if (res.status >= 400) return explained(res)
     return fit.wanted ? res : aggregated(res, fit.model)
   }
 }
