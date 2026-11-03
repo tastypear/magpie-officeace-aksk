@@ -41,7 +41,22 @@
 - 借鉴内容：OfficeAce 桌面客户端解包整理的端点、签名算法、模型清单与 chat 行为
   （经上述两个项目间接引用）
 
-## 4. magpie（插件接口）
+## 4. magpie-community/codearts（CodeArts 协议与 chat 处理）
+
+- 地址：https://github.com/magpie-community/plugins/tree/main/packages/codearts
+- 作者：magpie-community 及贡献者
+- 许可证：MIT
+- 借鉴内容（CodeArts 分支）：
+  - snap-access 签名（SDK-HMAC-SHA256 + x-sdk-content-sha256、canonical request 格式）
+  - chat 处理：默认注入 thinking 分离 reasoning、强制流式、超长工具名缩短/流式还原
+    （>64 字符按 55+8hex 切）、TM.00001041 会话上限重试、200 内嵌错误按码改写
+  - 积分制用量窗口口径（总积分门控 + 分桶 aside + 批次到期 runsOut）
+  - 静态模型目录与上下文窗口
+  - 区别：本插件用永久 AK/SK 直签（社区版为 OAuth+STS 临时凭证）；token 制套餐
+    （is_token_package）窗口纯展示不门控（社区版只认积分指标，会把 token 制账号
+    误判为「无积分额度」）
+
+## 5. magpie（插件接口）
 
 - 地址：https://github.com/yetone/magpie
 - 许可证：MIT
